@@ -388,6 +388,7 @@ def main(config):
     print("\n5-fold CV Result")
     print("AUC\tACC\tRMSE")
     print("{:.5f}\t{:.5f}\t{:.5f}".format(test_auc, test_acc, test_rmse))
+    print("KFold Test AUCs", test_aucs)
 
     return test_auc, test_acc, test_rmse
 

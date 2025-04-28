@@ -225,4 +225,4 @@ def model_train(
         )
     )
 
-    return test_auc, test_acc, test_rmse
+    return auc, acc, rmse
