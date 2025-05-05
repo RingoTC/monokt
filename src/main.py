@@ -60,7 +60,7 @@ def main(config):
     # Initialize wandb if it's not already initialized (direct run from main.py)
     if config.train_config.log_wandb:
         wandb.init(
-            project="kt-experiment",
+            project="new-RouterKT",
             config={
                 "model_name": model_name,
                 "data_name": data_name,

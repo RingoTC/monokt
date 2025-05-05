@@ -66,7 +66,7 @@ class MoHAttention(Module):
         balance_loss = (f * P).sum()
         return balance_loss
         
-    def forward(self, q, k, v, mask=None):
+    def forward(self, q, k, v, mask=None, zero_pad=False, q4router=None):
         bs = q.size(0)
         seq_len = q.size(1)
         
@@ -82,20 +82,24 @@ class MoHAttention(Module):
         q = q.view(bs, -1, self.h, self.d_k).transpose(1, 2)  # [bs, h, seq_len, d_k]
         k = k.view(bs, -1, self.h, self.d_k).transpose(1, 2)
         v = v.view(bs, -1, self.h, self.d_k).transpose(1, 2)
+
         
         # Calculate attention scores
         scores = torch.matmul(q, k.transpose(-2, -1)) / (self.d_k ** 0.5)  # [bs, h, seq_len, seq_len]
         
-            
         if mask is not None:
             scores = scores.masked_fill(mask == 0, -1e9)
             
         # First position zero padding
-        pad_zero = torch.zeros(bs, self.h, 1, scores.size(-1)).to(q.device)
-        scores = torch.cat([pad_zero, scores[:, :, 1:, :]], dim=2)
+        if zero_pad:
+            pad_zero = torch.zeros(bs, self.h, 1, scores.size(-1)).to(q.device)
+            scores = torch.cat([pad_zero, scores[:, :, 1:, :]], dim=2)
         
         # Calculate routing scores for dynamic heads
-        q_for_routing = q.permute(0, 2, 1, 3).reshape(bs * seq_len, self.h * self.d_k)  # [bs*seq_len, h*d_k]
+        q4router = q4router.view(bs, -1, self.h, self.d_k).transpose(1, 2)
+        q_for_routing = q4router.permute(0, 2, 1, 3).reshape(bs * seq_len, self.h * self.d_k)  # [bs*seq_len, h*d_k]
+
+        # q_for_routing = q.permute(0, 2, 1, 3).reshape(bs * seq_len, self.h * self.d_k)  # [bs*seq_len, h*d_k]
         
         # Handle dynamic heads routing
         if self.routing_mode == "dynamic":
@@ -355,19 +359,19 @@ class RouterKTArchitecture(Module):
         
         # Knowledge encoder
         for block in self.blocks_1:
-            y, _ = block(mask=1, query=y, key=y, values=y, diff=diff, response=r)
+            y, _ = block(mask=1, query=y, key=y, values=y, diff=diff, response=r, q4router=x)
             
         # Question encoder
         flag_first = True
         for block in self.blocks_2:
             if flag_first:
                 # x can see both current and past information
-                x, _ = block(mask=1, query=x, key=x, values=x, diff=diff, response=r, apply_pos=False)
+                x, _ = block(mask=1, query=x, key=x, values=x, diff=diff, response=r, apply_pos=False, q4router=x)
                 flag_first = False
             else:# dont peek current response
                 # knoweldge retriever
                 # h can see past only
-                x, attn = block(mask=0, query=x, key=x, values=y, diff=diff, response=r, apply_pos=True)
+                x, attn = block(mask=0, query=x, key=x, values=y, diff=diff, response=r, apply_pos=True, q4router=x)
                 flag_first = True
                 
         return x, attn
@@ -407,20 +411,27 @@ class RouterTransformerLayer(Module):
         self.layer_norm2 = get_layer_norm(d_model)
         self.dropout2 = Dropout(dropout)
         
-    def forward(self, mask, query, key, values, diff=None, response=None, apply_pos=True):
+    def forward(self, mask, query, key, values, diff=None, response=None, apply_pos=True, q4router=None):
         # Create proper attention mask based on the mask parameter
         seqlen = query.size(1)
         if mask == 0:  # can only see past values
             # Create mask that only allows attention to past values
             nopeek_mask = torch.triu(torch.ones(seqlen, seqlen), diagonal=0).bool()
+            zero_pad = True  # Set zero_pad to True when mask is 0
         else:  # mask == 1, can see current and past values
             # Create mask that allows attention to current and past values
             nopeek_mask = torch.triu(torch.ones(seqlen, seqlen), diagonal=1).bool()
+            zero_pad = False  # Set zero_pad to False when mask is 1
             
         src_mask = (~nopeek_mask).to(query.device)
         
-        # Apply MoH attention with proper masking
-        attn_output = self.attn(query, key, values, src_mask)
+        # Apply MoH attention with proper masking and zero padding
+    
+        if mask == 0:
+            attn_output = self.attn(query, key, values, src_mask, zero_pad=True, q4router=q4router)
+        else:
+            attn_output = self.attn(query, key, values, src_mask, zero_pad=False, q4router=q4router)
+    
         x = self.layer_norm1(query + self.dropout1(attn_output))
         
         # Feed forward
