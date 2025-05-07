@@ -330,10 +330,12 @@ class MostEarlyQuestionSkillDataset(Dataset):
             self.attention_mask[i, : len(r)] = torch.ones(len(s), dtype=torch.long)
 
     def __getitem__(self, index):
+        random_response = torch.randint(0, 2, (self.seq_len,))
         return {
             "questions": self.padded_q[index],
             "skills": self.padded_s[index],
-            "responses": self.padded_r[index],
+            # "responses": self.padded_r[index],
+            "responses": random_response,
             "times": self.padded_t[index],
             "attention_mask": self.attention_mask[index],
         }

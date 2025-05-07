@@ -227,8 +227,8 @@ qikt_moe_config:
 train_config:
   wl: 0.0
   log_wandb: True
-  sequence_option: "recent" # early or recent, recent_stack for AKT'
-  seq_len: 100
+  sequence_option: "early" # early or recent, recent_stack for AKT'
+  seq_len: 10
   batch_size: 512
   eval_batch_size: 512
   num_epochs: 1000

@@ -134,8 +134,8 @@ def model_train(
                     "params_{}".format(str(best_epoch)),
                 ),
             )
-        if i - best_epoch > 10:
-            break
+        # if i - best_epoch > 10:
+        #     break
 
         # clear lists to track next epochs
         train_losses = []

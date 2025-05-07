@@ -94,6 +94,7 @@ class MoHAttention(Module):
         if zero_pad:
             pad_zero = torch.zeros(bs, self.h, 1, scores.size(-1)).to(q.device)
             scores = torch.cat([pad_zero, scores[:, :, 1:, :]], dim=2)
+            q4router = torch.cat([pad_zero, q4router[:, :-1, :, :]], dim=1)
         
         # Calculate routing scores for dynamic heads
         q4router = q4router.view(bs, -1, self.h, self.d_k).transpose(1, 2)
@@ -359,7 +360,7 @@ class RouterKTArchitecture(Module):
         
         # Knowledge encoder
         for block in self.blocks_1:
-            y, _ = block(mask=1, query=y, key=y, values=y, diff=diff, response=r, q4router=x)
+            y, _ = block(mask=1, query=y, key=y, values=y, diff=diff, response=r, q4router=y)
             
         # Question encoder
         flag_first = True
