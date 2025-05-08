@@ -32,7 +32,7 @@ def get_layer_norm(d_model):
 class MoHAttention(Module):
     def __init__(self, d_model, d_feature, n_heads, n_shared_heads, 
                  n_selected_heads, dropout, kq_same,
-                 seq_len=200, routing_mode="dynamic"):
+                 seq_len=200):
         super().__init__()
         self.d_model = d_model
         self.d_k = d_feature
@@ -40,7 +40,6 @@ class MoHAttention(Module):
         self.h_shared = n_shared_heads
         self.h_selected = n_selected_heads
         self.kq_same = kq_same
-        self.routing_mode = routing_mode
         
         # Linear layers for Q, K, V
         self.q_linear = Linear(d_model, d_model)
@@ -48,9 +47,8 @@ class MoHAttention(Module):
             self.k_linear = Linear(d_model, d_model)
         self.v_linear = Linear(d_model, d_model)
         
-        # Routing networks
-        if routing_mode == "dynamic":
-            self.wg = nn.Linear(d_model, n_heads - n_shared_heads, bias=False)  # Router for dynamic heads
+        # Routing network
+        self.wg = nn.Linear(d_model, n_heads - n_shared_heads, bias=False)  # Router for dynamic heads
             
         self.dropout = Dropout(dropout)
         self.out = Linear(d_model, d_model)
@@ -94,31 +92,14 @@ class MoHAttention(Module):
         if zero_pad:
             pad_zero = torch.zeros(bs, self.h, 1, scores.size(-1)).to(q.device)
             scores = torch.cat([pad_zero, scores[:, :, 1:, :]], dim=2)
-            q4router = torch.cat([pad_zero, q4router[:, :-1, :, :]], dim=1)
         
         # Calculate routing scores for dynamic heads
         q4router = q4router.view(bs, -1, self.h, self.d_k).transpose(1, 2)
         q_for_routing = q4router.permute(0, 2, 1, 3).reshape(bs * seq_len, self.h * self.d_k)  # [bs*seq_len, h*d_k]
-
-        # q_for_routing = q.permute(0, 2, 1, 3).reshape(bs * seq_len, self.h * self.d_k)  # [bs*seq_len, h*d_k]
         
-        # Handle dynamic heads routing
-        if self.routing_mode == "dynamic":
-            # Use learned routing weights
-            logits = self.wg(q_for_routing)  # [bs*seq_len, n_dynamic_heads]
-            gates = F.softmax(logits, dim=1)  # [bs*seq_len, n_dynamic_heads]
-        else:  # query_norm mode
-            # Calculate L2 norms for dynamic heads
-            q_for_routing = q.permute(0, 2, 1, 3).reshape(-1, self.h, self.d_k)
-            logits = torch.stack([
-                torch.norm(q_for_routing[:, i, :], p=2, dim=1) 
-                for i in range(self.h_shared, self.h)
-            ], dim=1)  # [bs*seq_len, n_dynamic_heads]
-            
-            # Normalize logits
-            logits_std = logits.std(dim=1, keepdim=True)
-            logits_norm = logits / (logits_std / 1)
-            gates = F.softmax(logits_norm, dim=1)  # [bs*seq_len, n_dynamic_heads]
+        # Use learned routing weights
+        logits = self.wg(q_for_routing)  # [bs*seq_len, n_dynamic_heads]
+        gates = F.softmax(logits, dim=1)  # [bs*seq_len, n_dynamic_heads]
         
         # Select top-k heads
         _, indices = torch.topk(gates, k=self.h_selected, dim=1)
@@ -140,8 +121,10 @@ class MoHAttention(Module):
         routing_mask[:, :, self.h_shared:] = dynamic_scores_reshaped  # Add dynamic head weights
         
         # Reshape routing mask to match attention dimensions [bs, h, seq_len, 1]
-        routing_mask = routing_mask.mean(dim=1).unsqueeze(-1).unsqueeze(-1)
-        
+        # routing_mask = routing_mask.mean(dim=1).unsqueeze(-1).unsqueeze(-1)
+        routing_mask = routing_mask.permute(0, 2, 1).unsqueeze(-1)        
+
+
         # Apply attention
         attn = self.dropout(torch.softmax(scores, dim=-1))
         
@@ -167,7 +150,7 @@ class RouterKT(Module):
                  kq_same=True, final_fc_dim=512, final_fc_dim2=256, 
                  l2=1e-5,
                  separate_qr=False, balance_loss_weight=0.01,
-                 routing_mode="dynamic",**kwargs):
+                 **kwargs):
         super().__init__()
         self.model_name = "routerkt"
         self.num_skills = num_skills
@@ -179,7 +162,6 @@ class RouterKT(Module):
         self.num_attn_heads = num_attn_heads
         self.num_shared_heads = num_shared_heads
         self.num_selected_heads = num_selected_heads
-        self.routing_mode = routing_mode
         
         # Question difficulty parameters if using question IDs
         if self.num_questions > 0:
@@ -212,8 +194,7 @@ class RouterKT(Module):
             d_feature=embedding_size // num_attn_heads,  # Adjust feature dimension based on total heads
             d_ff=d_ff,
             kq_same=kq_same,
-            seq_len=seq_len,
-            routing_mode=routing_mode
+            seq_len=seq_len
         )
         
         # Output layers
@@ -309,7 +290,7 @@ class RouterKT(Module):
 class RouterKTArchitecture(Module):
     def __init__(self, n_question, n_blocks, d_model, d_feature,
                  d_ff, n_heads, n_shared_heads, n_selected_heads, dropout,
-                 kq_same, seq_len, routing_mode="dynamic"):
+                 kq_same, seq_len):
         super().__init__()
         self.d_model = d_model
         
@@ -325,8 +306,7 @@ class RouterKTArchitecture(Module):
                     n_shared_heads=n_shared_heads,
                     n_selected_heads=n_selected_heads,
                     kq_same=kq_same,
-                    seq_len=seq_len,
-                    routing_mode=routing_mode
+                    seq_len=seq_len
                 )
                 for _ in range(n_blocks)
             ]
@@ -344,8 +324,7 @@ class RouterKTArchitecture(Module):
                     n_shared_heads=n_shared_heads,
                     n_selected_heads=n_selected_heads,
                     kq_same=kq_same,
-                    seq_len=seq_len,
-                    routing_mode=routing_mode
+                    seq_len=seq_len
                 )
                 for _ in range(n_blocks * 2)
             ]
@@ -387,7 +366,7 @@ class RouterKTArchitecture(Module):
 
 class RouterTransformerLayer(Module):
     def __init__(self, d_model, d_feature, d_ff, dropout, n_heads, 
-                 n_shared_heads, n_selected_heads, kq_same, seq_len=200, routing_mode="dynamic", use_gradient_accumulation=False):
+                 n_shared_heads, n_selected_heads, kq_same, seq_len=200, use_gradient_accumulation=False):
         super().__init__()
         
         # Pass parameters to MoHAttention
@@ -399,8 +378,7 @@ class RouterTransformerLayer(Module):
             n_selected_heads=n_selected_heads,
             dropout=dropout,
             kq_same=kq_same,
-            seq_len=seq_len,
-            routing_mode=routing_mode
+            seq_len=seq_len
         )
         
         # Layer norm and dropout
